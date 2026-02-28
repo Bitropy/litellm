@@ -22,6 +22,26 @@ from litellm.types.llms.anthropic import (
 from litellm.types.llms.openai import AllMessageValues
 
 
+def is_anthropic_oauth_key(value: Optional[str]) -> bool:
+    """Check if a value contains an Anthropic OAuth token (sk-ant-oat*)."""
+    if value is None:
+        return False
+    # Handle both raw token and "Bearer <token>" format
+    if value.startswith("Bearer "):
+        value = value[7:]
+    return value.startswith(ANTHROPIC_OAUTH_TOKEN_PREFIX)
+
+def _merge_beta_header(headers: dict, beta_value: str) -> None:
+    """Merge a beta header value into the existing anthropic-beta header."""
+    existing = headers.get("anthropic-beta", "")
+    if existing:
+        betas = set(b.strip() for b in existing.split(",") if b.strip())
+        betas.add(beta_value)
+        headers["anthropic-beta"] = ",".join(sorted(betas))
+    else:
+        headers["anthropic-beta"] = beta_value
+
+
 def optionally_handle_anthropic_oauth(
     headers: dict, api_key: Optional[str]
 ) -> tuple[dict, Optional[str]]:
@@ -43,14 +63,14 @@ def optionally_handle_anthropic_oauth(
     if auth_header and auth_header.startswith(f"Bearer {ANTHROPIC_OAUTH_TOKEN_PREFIX}"):
         api_key = auth_header.replace("Bearer ", "")
         headers.pop("x-api-key", None)
-        headers["anthropic-beta"] = ANTHROPIC_OAUTH_BETA_HEADER
+        _merge_beta_header(headers, ANTHROPIC_OAUTH_BETA_HEADER)
         headers["anthropic-dangerous-direct-browser-access"] = "true"
         return headers, api_key
     # Check api_key directly (standard chat/completion flow)
     if api_key and api_key.startswith(ANTHROPIC_OAUTH_TOKEN_PREFIX):
         headers.pop("x-api-key", None)
         headers["authorization"] = f"Bearer {api_key}"
-        headers["anthropic-beta"] = ANTHROPIC_OAUTH_BETA_HEADER
+        _merge_beta_header(headers, ANTHROPIC_OAUTH_BETA_HEADER)
         headers["anthropic-dangerous-direct-browser-access"] = "true"
     return headers, api_key
 
