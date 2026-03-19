@@ -604,21 +604,34 @@ async def anthropic_proxy_route(
     base_url = httpx.URL(base_target_url)
     updated_url = base_url.copy_with(path=encoded_endpoint)
 
-    # Add or update query parameters
-    anthropic_api_key = passthrough_endpoint_router.get_credentials(
-        custom_llm_provider="anthropic",
-        region_name=None,
-    )
+    # Credential priority: client-provided credentials take precedence over
+    # server credentials. This allows mixed mode where some users bring their
+    # own key (BYOK) or OAuth token (Claude Code Max) while others use the
+    # server's API key.
+    x_api_key_header = request.headers.get("x-api-key", "")
+    client_authorization_header = request.headers.get("authorization", "")
+
+    custom_headers: dict
+    if x_api_key_header or client_authorization_header:
+        custom_headers = {}
+    else:
+        anthropic_api_key = passthrough_endpoint_router.get_credentials(
+            custom_llm_provider="anthropic",
+            region_name=None,
+        )
+        server_auth_header = AnthropicModelInfo.get_auth_header(
+            anthropic_api_key or None
+        )
+        custom_headers = server_auth_header if server_auth_header is not None else {}
 
     ## check for streaming
     is_streaming_request = await is_streaming_request_fn(request)
 
     ## CREATE PASS-THROUGH
-    auth_header = AnthropicModelInfo.get_auth_header(anthropic_api_key or None)
     endpoint_func = create_pass_through_route(
         endpoint=endpoint,
         target=str(updated_url),
-        custom_headers=auth_header if auth_header is not None else {},
+        custom_headers=custom_headers,
         _forward_headers=True,
         is_streaming_request=is_streaming_request,
     )  # dynamically construct pass-through endpoint based on incoming path
