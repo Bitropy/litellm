@@ -562,9 +562,11 @@ class InMemoryGuardrailHandler:
             guardrail_id
         )
         if custom_guardrail_callback:
-            updated_litellm_params = cast(
-                LitellmParams, guardrail.get("litellm_params", {})
-            )
+            litellm_params_data = guardrail.get("litellm_params", {})
+            if isinstance(litellm_params_data, dict):
+                updated_litellm_params = LitellmParams(**litellm_params_data)
+            else:
+                updated_litellm_params = cast(LitellmParams, litellm_params_data)
             custom_guardrail_callback.update_in_memory_litellm_params(
                 litellm_params=updated_litellm_params
             )
