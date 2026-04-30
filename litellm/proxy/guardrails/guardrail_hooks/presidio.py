@@ -488,58 +488,59 @@ class _OPTIONAL_PresidioPIIMasking(CustomGuardrail):
             new_text = text
             if redacted_text is not None:
                 verbose_proxy_logger.debug("redacted_text: %s", redacted_text)
-                # Process items in reverse order by start position so that
-                # replacing later spans first does not shift earlier coordinates.
-                for item in sorted(
-                    redacted_text["items"], key=lambda x: x["start"], reverse=True
-                ):
-                    start = item["start"]
-                    end = item["end"]
-                    replacement = item["text"]  # replacement token
-                    if item["operator"] == "replace" and output_parse_pii is True:
-                        if request_data is None:
-                            verbose_proxy_logger.warning(
-                                "Presidio anonymize_text called without request_data — "
-                                "PII tokens cannot be stored per-request. "
-                                "This may indicate a missing caller update."
+                if not output_parse_pii:
+                    # Defect 3 primary fix: return Presidio's redacted output verbatim.
+                    # redacted_text["items"] carry OUTPUT coordinates (positions in the
+                    # already-redacted string), not original-text coordinates.  Any
+                    # attempt to stitch them back into the original text drifts whenever
+                    # a replacement token has a different length than the original span.
+                    # Presidio already produced the correct output — use it as-is.
+                    new_text = redacted_text["text"]
+                    for item in redacted_text.get("items", []):
+                        entity_type = item.get("entity_type", None)
+                        if entity_type is not None:
+                            masked_entity_count[entity_type] = (
+                                masked_entity_count.get(entity_type, 0) + 1
                             )
-                            request_data = {}
-                        # Store pii_tokens in metadata to avoid leaking to LLM providers.
-                        # Providers like Anthropic reject unknown top-level fields.
-                        if not request_data.get("metadata"):
-                            request_data["metadata"] = {}
-                        if "pii_tokens" not in request_data["metadata"]:
-                            request_data["metadata"]["pii_tokens"] = {}
-                        pii_tokens = request_data["metadata"]["pii_tokens"]
-
-                        # Append a sequential number to make each token unique
-                        # per request, so unmasking maps back to the correct
-                        # original value.  Format: <PHONE_NUMBER_1>, <PHONE_NUMBER_2>
-                        # This is LLM-friendly and degrades gracefully if the
-                        # LLM doesn't echo the token verbatim.
-                        seq = len(pii_tokens) + 1
-                        if replacement.endswith(">"):
-                            replacement = f"{replacement[:-1]}_{seq}>"
-                        else:
-                            replacement = f"{replacement}_{seq}"
-
-                        # Use ORIGINAL text (not new_text) since start/end
-                        # reference the original text's coordinates.
-                        pii_tokens[replacement] = text[start:end]
-
-                    new_text = new_text[:start] + replacement + new_text[end:]
-                    entity_type = item.get("entity_type", None)
-                    if entity_type is not None:
-                        masked_entity_count[entity_type] = (
-                            masked_entity_count.get(entity_type, 0) + 1
+                else:
+                    # Defect 3 secondary fix (output_parse_pii=True): use analyze_results
+                    # (pre-anonymize, original-text coordinates) for both stitching and
+                    # pii_tokens construction.  redacted_text["items"] coords are wrong
+                    # here for the same reason as above.
+                    if request_data is None:
+                        verbose_proxy_logger.warning(
+                            "Presidio anonymize_text called without request_data — "
+                            "PII tokens cannot be stored per-request. "
+                            "This may indicate a missing caller update."
                         )
-                # When output_parse_pii is True, new_text contains sequentially
-                # numbered tokens (e.g. <PHONE_NUMBER_1>) that match the keys
-                # in pii_tokens.  Returning redacted_text["text"] (Presidio's
-                # original output) would send un-numbered tokens to the LLM,
-                # making unmasking impossible.
-                # When output_parse_pii is False, new_text == redacted_text["text"]
-                # because no suffix is appended.
+                        request_data = {}
+                    if not request_data.get("metadata"):
+                        request_data["metadata"] = {}
+                    if "pii_tokens" not in request_data["metadata"]:
+                        request_data["metadata"]["pii_tokens"] = {}
+                    pii_tokens = request_data["metadata"]["pii_tokens"]
+
+                    for result_item in sorted(
+                        analyze_results,
+                        key=lambda x: x.get("start", 0),
+                        reverse=True,
+                    ):
+                        start = result_item.get("start")
+                        end = result_item.get("end")
+                        entity_type = result_item.get("entity_type", "PII")
+                        if start is None or end is None:
+                            continue
+
+                        # Unique numbered token per detection so unmasking maps back
+                        # to the correct original value.  Format: <PHONE_NUMBER_1>.
+                        seq = len(pii_tokens) + 1
+                        replacement = f"<{entity_type}_{seq}>"
+                        # Original-text coordinates — correct original substring.
+                        pii_tokens[replacement] = text[start:end]
+                        new_text = new_text[:start] + replacement + new_text[end:]
+                        masked_entity_count[str(entity_type)] = (
+                            masked_entity_count.get(str(entity_type), 0) + 1
+                        )
                 return new_text
             else:
                 raise Exception("Invalid anonymizer response: received None")
